@@ -1,0 +1,26 @@
+# Core
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.4
+scipy>=1.12
+
+# Deep learning
+torch>=2.2
+
+# Federated learning
+flwr>=1.8          # Flower — swap for a custom FedAvg loop if preferred
+
+# Data handling / experiment tracking
+pyyaml>=6.0
+tqdm>=4.66
+matplotlib>=3.8
+seaborn>=0.13
+tensorboard>=2.16
+
+# Notebooks
+jupyter>=1.0
+ipykernel>=6.29
+
+# Testing / lint
+pytest>=8.0
+ruff>=0.3
