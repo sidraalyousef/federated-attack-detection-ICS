@@ -10,7 +10,7 @@ datasets.
 
 The project spans two semesters:
 
-- **Semester 1 — Design phase** (9 weeks): literature review, data exploration, methodology
+- **Semester 1 — Design phase** (9 weeks): data exploration, methodology
   selection, proposal.
 - **Semester 2 — Implementation phase** (14 weeks): model implementation, federated setup,
   evaluation, and a **live running demo** (not just offline results).
