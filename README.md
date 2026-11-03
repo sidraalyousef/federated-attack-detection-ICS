@@ -32,25 +32,28 @@ related-work framing this project builds on.
 
 ```
 ├── data/
-│   ├── raw/            # SWaT/WADI/HAI raw data (NOT committed — see Data access below)
+│   ├── raw/             # SWaT/WADI/HAI raw data (NOT committed — see Data access below)
+│   │   ├── swat/
+│   │   ├── wadi/
+│   │   └── hai/
 │   └── processed/       # cleaned/windowed data (NOT committed)
 ├── notebooks/           # exploratory analysis, per-dataset EDA
 ├── src/
 │   ├── models/          # LSTM, conv-autoencoder model definitions
-│   ├── federated/        # client/server logic, aggregation strategies
-│   ├── data_loaders/     # dataset loading, preprocessing, windowing
-│   └── eval/             # metrics (including PA / PA%K scoring per evaluation-rigor lit)
-├── experiments/          # run configs, scripts, results tracking
-├── docs/                 # proposal, literature review, progress reports
+│   ├── federated/       # client/server logic, aggregation strategies
+│   ├── data_loaders/    # dataset loading, preprocessing, windowing
+│   └── eval/            # metrics (including PA / PA%K scoring per evaluation-rigor lit)
+├── experiments/         # run configs, scripts, results tracking
+├── docs/                # proposal, literature review, progress reports
 ├── requirements.txt
 └── README.md
 ```
 
 ## Data access
 
-SWaT, WADI, and HAI require a signed access request through iTrust (SUTD) / the HAI testbed
-maintainers respectively. Raw data is **not** committed to this repo. Once obtained, place
-files under `data/raw/<dataset>/` — this path is gitignored.
+SWaT, WADI, and HAI require a signed access request:
+- **SWaT / WADI**: request access via iTrust (SUTD) — https://itrust.sutd.edu.sg/itrust-labs_datasets/
+- **HAI**: available from the HAI testbed maintainers' repo — https://github.com/icsdataset/hai
 
 ## Setup
 
