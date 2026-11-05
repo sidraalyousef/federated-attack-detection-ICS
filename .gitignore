@@ -1,15 +1,9 @@
 ﻿# Datasets (SWaT / WADI / HAI require signed access agreements — never commit raw data)
-# Datasets (SWaT / WADI / HAI require signed access agreements — never commit raw data)
-data/raw/*
-data/processed/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/raw/swat/
-!data/raw/swat/.gitkeep
-!data/raw/wadi/
-!data/raw/wadi/.gitkeep
-!data/raw/hai/
-!data/raw/hai/.gitkeep
+data/raw/**
+data/processed/**
+!data/raw/**/
+!data/processed/**/
+!**/.gitkeep
 
 # Python
 __pycache__/
