@@ -4,7 +4,7 @@ Graduation project (ENS491/492) — federated learning for cyberattack / anomaly
 industrial control system infrastructure, using the **SWaT**, **WADI**, and **HAI** testbed
 datasets.
 
-**Team:** Sid, Salma, Fowzi
+**Team:** Sedra Alyousef (Sid), Salma Tubail, Fowzi Hindi
 
 ## Project overview
 
@@ -39,10 +39,17 @@ related-work framing this project builds on.
 │   └── processed/       # cleaned/windowed data (NOT committed)
 ├── notebooks/           # exploratory analysis, per-dataset EDA
 ├── src/
+│   ├── __init__.py      # 
 │   ├── models/          # LSTM, conv-autoencoder model definitions
 │   ├── federated/       # client/server logic, aggregation strategies
 │   ├── data_loaders/    # dataset loading, preprocessing, windowing
 │   └── eval/            # metrics (including PA / PA%K scoring per evaluation-rigor lit)
+│       ├── __init__.py  # 
+│       ├── metrics.py   # 
+│       └── README.md    # 
+├── tests/               # unit tests, mirrors src/
+│   ├── __init__.py      # 
+│   └── test_metrics.py  # 
 ├── experiments/         # run configs, scripts, results tracking
 ├── docs/                # proposal, literature review, progress reports
 ├── requirements.txt
@@ -57,9 +64,16 @@ SWaT, WADI, and HAI require a signed access request:
 
 ## Setup
 
+**For Linux**
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
+```
+**For Windows**
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
