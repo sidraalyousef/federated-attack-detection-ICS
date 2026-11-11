@@ -3,6 +3,7 @@ import pytest
 
 from src.eval import (
     best_f1_threshold,
+    etapr_scores,
     evaluate,
     evaluate_groups,
     get_segments,
@@ -133,3 +134,50 @@ def test_evaluate_groups_per_client_thresholds():
     assert res["c1"]["raw_f1"] == 1.0 and res["c2"]["raw_f1"] == 1.0
     res_global = evaluate_groups(scores, labels, groups, 5.0)
     assert res_global["c1"]["raw_f1"] == 0.0
+
+
+# ----------------------------- eTaPR --------------------------------------- #
+def test_etapr_perfect_and_empty():
+    perfect = etapr_scores(LABELS, LABELS)
+    assert perfect["etapr_f1"] == pytest.approx(1.0)
+    assert perfect["etapr_detected_attacks"] == 2
+    none = etapr_scores(np.zeros_like(LABELS), LABELS)
+    assert none["etapr_f1"] == 0.0 and none["etapr_detected_attacks"] == 0
+
+
+def test_etapr_theta_r_controls_detection():
+    preds = np.zeros_like(LABELS)
+    preds[4] = 1  # covers 25% of the first attack, 0% of the second
+    assert etapr_scores(preds, LABELS, theta_r=0.1)["etapr_detected_attacks"] == 1
+    assert etapr_scores(preds, LABELS, theta_r=0.5)["etapr_detected_attacks"] == 0
+
+
+def test_etapr_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        etapr_scores([0, 1], [0, 1, 0])
+
+
+def test_evaluate_includes_etapr_by_default_and_can_skip():
+    scores = LABELS.astype(float)
+    res = evaluate(scores, LABELS, threshold=0.5)
+    assert res["etapr_f1"] == pytest.approx(1.0)
+    res_off = evaluate(scores, LABELS, threshold=0.5, include_etapr=False)
+    assert "etapr_f1" not in res_off
+
+
+def test_etapr_not_fooled_by_random_scores():
+    labels = np.zeros(20_000, dtype=int)
+    for start in range(1_000, 19_000, 2_000):
+        labels[start : start + 500] = 1
+    res = evaluate(random_scores(labels.size, seed=1), labels, threshold=0.99)
+    assert res["etapr_f1"] < res["pa_f1"]
+
+
+def test_evaluate_groups_passes_kwargs():
+    scores = np.concatenate([LABELS * 1.0, LABELS * 1.0])
+    labels = np.concatenate([LABELS, LABELS])
+    groups = np.array([0] * len(LABELS) + [1] * len(LABELS))
+    res = evaluate_groups(scores, labels, groups, 0.5, include_etapr=False)
+    assert "etapr_f1" not in res[0]
+    res = evaluate_groups(scores, labels, groups, 0.5)
+    assert res[1]["etapr_f1"] == pytest.approx(1.0)

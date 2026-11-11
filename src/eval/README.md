@@ -24,11 +24,13 @@ Per-client results (federated): `evaluate_groups(scores, labels, client_ids, thr
 
 ## Rules for the team
 
-1. **Report all three F1s:** `raw_f1` (headline), `pa_f1` (for comparison with papers only), and `pak_auc_f1`. Add `auroc`/`auprc` as threshold-free numbers.
+1. **Report all three F1s:** `raw_f1` (headline), `pa_f1` (for comparison with papers only), and `pak_auc_f1`. Add `auroc`/`auprc` as threshold-free numbers, and `etapr_f1` (computed by default) on every dataset. It's the HAI authors' own metric, so HAI tables must include it.
 2. **Threshold:** `threshold_from_normal` on a held-out slice of normal training data, with the same rule (default: 99th percentile) for every model. `best_f1_threshold` uses test labels. It is an oracle upper bound and must be labelled as one.
 3. **Window alignment:** `mode="last"` by default. Labels are never windowed: keep the original per-timestep labels, and let `evaluate` drop the NaN warm-up points.
 4. **Sanity check:** every results table includes a `random_scores` row. A model that doesn't clearly beat it on `raw_f1` and `pak_auc_f1` isn't detecting anything.
 
 PA%K follows Kim et al., AAAI-22: a segment is filled in when more than K% of its points are flagged. K=0 is PA and K=100 is raw. The default sweep is K = 0, 10, …, 100, and the reported number is the area under that sweep.
+
+eTaPR (enhanced time-series aware precision/recall, Hwang et al. 2022) comes from the `faster-etapr` package, pinned in `requirements.txt`. It counts an attack as detected if at least 10% of it is covered (`theta_r=0.1`), and an alarm as correct if at least 50% of it overlaps an attack (`theta_p=0.5`). These are the authors' defaults. Keep them fixed for all reported results. Call it directly with `etapr_scores(preds, labels)`, or switch it off with `evaluate(..., include_etapr=False)`.
 
 Tests: `python -m pytest tests -q`

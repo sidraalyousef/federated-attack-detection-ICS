@@ -15,6 +15,11 @@ Time-Series Anomaly Detection", AAAI-22):
           flagged. K=0 equals PA, K=100 equals raw. We sweep K and report the
           area under the F1-vs-K curve (normalised to [0, 1]).
 
+On top of these, eTaPR (enhanced time-series aware precision/recall, Hwang et
+al. 2022; the metric used by the HAI dataset authors) is reported via the
+``faster-etapr`` package. It scores whole attacks and whole alarms rather than
+single timesteps. See :func:`etapr_scores`.
+
 Conventions
 -----------
 * ``labels``: 1-D array of 0/1 per timestep (1 = attack).
@@ -27,6 +32,7 @@ Conventions
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 
@@ -35,6 +41,9 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 # for PA%K:Ks between 0 and 100, incremented by 10 
 DEFAULT_KS: tuple[int, ...] = tuple(range(0, 101, 10))
+# eTaPR defaults (Hwang et al.): alarm must be >=50% correct, attack >=10% covered
+DEFAULT_THETA_P: float = 0.5
+DEFAULT_THETA_R: float = 0.1
 
 
 # --------------------------------------------------------------------------- 
@@ -264,11 +273,65 @@ def random_scores(n: int, seed: int = 0) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+def etapr_scores(
+    preds: Sequence[int],
+    labels: Sequence[int],
+    theta_p: float = DEFAULT_THETA_P,
+    theta_r: float = DEFAULT_THETA_R,
+) -> dict[str, float]:
+    """Enhanced time-series aware precision/recall (eTaPR), Hwang et al. 2022.
+
+    The metric used by the HAI dataset authors. Unlike point-wise F1 it scores
+    whole attacks and whole alarms:
+
+    * eTaR (recall): was each attack detected (enough of it covered,
+      ``theta_r``), and what share of it was covered?
+    * eTaP (precision): does each predicted alarm overlap a real attack
+      (``theta_p``), and what share of the alarm is correct?
+
+    Thin wrapper around the ``faster-etapr`` package (a tested, faster
+    re-implementation of the authors' original code). The import is done here,
+    not at module level, so the rest of this module works without it and its
+    deprecation warnings stay out of the way.
+
+    Parameters
+    ----------
+    preds, labels : 1-D 0/1 arrays of equal length.
+    theta_p : minimum share of an alarm that must overlap an attack for the
+        alarm to count as correct. Default 0.5 (authors' default).
+    theta_r : minimum share of an attack that must be covered for the attack
+        to count as detected. Default 0.1 (authors' default).
+
+    Returns
+    -------
+    dict with ``etapr_precision``, ``etapr_recall``, ``etapr_f1`` and
+    ``etapr_detected_attacks`` (number of attacks counted as detected).
+    """
+    p = _as_binary(preds, "preds")
+    y = _as_binary(labels, "labels")
+    if p.shape != y.shape:
+        raise ValueError(f"preds {p.shape} and labels {y.shape} differ in length")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from faster_etapr import evaluate_from_preds
+
+        res = evaluate_from_preds(p, y, theta_p=theta_p, theta_r=theta_r)
+    return {
+        "etapr_precision": float(res["eta/precision"]),
+        "etapr_recall": float(res["eta/recall"]),
+        "etapr_f1": float(res["eta/f1"]),
+        "etapr_detected_attacks": int(res["eta/detected_anomalies"]),
+    }
+
+
 def evaluate(
     scores: Sequence[float],
     labels: Sequence[int],
     threshold: float,
     ks: Iterable[float] = DEFAULT_KS,
+    include_etapr: bool = True,
+    theta_p: float = DEFAULT_THETA_P,
+    theta_r: float = DEFAULT_THETA_R,
 ) -> dict:
     """Score one model on one test set with all protocols.
 
@@ -280,8 +343,14 @@ def evaluate(
         :func:`threshold_from_normal` unless you are explicitly reporting an
         oracle upper bound.
     ks : K values (in %) for the PA%K sweep.
+    include_etapr : also compute eTaPR (see :func:`etapr_scores`) on the same
+        predictions. Needs the ``faster-etapr`` package.
+    theta_p, theta_r : eTaPR parameters; keep the defaults for all reported
+        results so numbers stay comparable.
 
-    Returns a flat dict, convenient for building result tables:
+    Returns a flat dict, convenient for building result tables
+    (plus etapr_precision, etapr_recall, etapr_f1, etapr_detected_attacks
+    when ``include_etapr`` is True):
         raw_precision, raw_recall, raw_f1,
         pa_precision,  pa_recall,  pa_f1,
         pak_auc_f1, pak_f1 (dict K -> F1),
@@ -299,7 +368,7 @@ def evaluate(
     detected = sum(int(preds[a:b].any()) for a, b in segments)
 
     both_classes = 0 < y.sum() < y.size
-    return {
+    result = {
         "raw_precision": raw.precision,
         "raw_recall": raw.recall,
         "raw_f1": raw.f1,
@@ -316,6 +385,9 @@ def evaluate(
         "n_segments": len(segments),
         "n_segments_detected": detected,
     }
+    if include_etapr:
+        result.update(etapr_scores(preds, y, theta_p, theta_r))
+    return result
 
 
 def evaluate_groups(
@@ -324,8 +396,12 @@ def evaluate_groups(
     groups: Sequence,
     threshold: float | dict,
     ks: Iterable[float] = DEFAULT_KS,
+    **evaluate_kwargs,
 ) -> dict:
     """Run :func:`evaluate` separately for each group (e.g. each FL client).
+
+    Extra keyword arguments (``include_etapr``, ``theta_p``, ``theta_r``) are
+    passed on to :func:`evaluate`.
 
     ``threshold`` is either one global float or a dict mapping group -> threshold
     (per-client thresholds). Note: segments are recomputed inside each group,
@@ -339,14 +415,15 @@ def evaluate_groups(
     for grp in np.unique(g):
         m = g == grp
         t = threshold[grp] if isinstance(threshold, dict) else threshold
-        out[grp.item() if hasattr(grp, "item") else grp] = evaluate(s[m], y[m], t, ks)
+        out[grp.item() if hasattr(grp, "item") else grp] = evaluate(s[m], y[m], t, ks, **evaluate_kwargs)
     return out
 
 
 def summary_row(result: dict, name: str = "") -> str:
     """One-line human-readable summary of an :func:`evaluate` result."""
+    etapr = f"  eTaPR F1={result['etapr_f1']:.3f}" if "etapr_f1" in result else ""
     return (
         f"{name:<20} raw F1={result['raw_f1']:.3f}  PA F1={result['pa_f1']:.3f}  "
-        f"PA%K-AUC={result['pak_auc_f1']:.3f}  AUROC={result['auroc']:.3f}  "
+        f"PA%K-AUC={result['pak_auc_f1']:.3f}{etapr}  AUROC={result['auroc']:.3f}  "
         f"segments {result['n_segments_detected']}/{result['n_segments']}"
     )
