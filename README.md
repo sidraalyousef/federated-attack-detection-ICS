@@ -39,17 +39,17 @@ related-work framing this project builds on.
 │   └── processed/       # cleaned/windowed data (NOT committed)
 ├── notebooks/           # exploratory analysis, per-dataset EDA
 ├── src/
-│   ├── __init__.py      # 
+│   ├── __init__.py       
 │   ├── models/          # LSTM, conv-autoencoder model definitions
 │   ├── federated/       # client/server logic, aggregation strategies
 │   ├── data_loaders/    # dataset loading, preprocessing, windowing
 │   └── eval/            # metrics (including PA / PA%K scoring per evaluation-rigor lit)
-│       ├── __init__.py  # 
-│       ├── metrics.py   # 
-│       └── README.md    # 
+│       ├── __init__.py   
+│       ├── metrics.py   
+│       └── README.md    
 ├── tests/               # unit tests, mirrors src/
-│   ├── __init__.py      # 
-│   └── test_metrics.py  # 
+│   ├── __init__.py       
+│   └── test_metrics.py  
 ├── experiments/         # run configs, scripts, results tracking
 ├── docs/                # proposal, literature review, progress reports
 ├── requirements.txt
