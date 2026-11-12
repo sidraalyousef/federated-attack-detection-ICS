@@ -51,11 +51,11 @@ related-work framing this project builds on.
 │       ├── __init__.py   
 │       ├── metrics.py   
 │       └── README.md    
-├── tests/                             # unit tests, mirrors src/
+├── tests/                            # unit tests, mirrors src/
 │   ├── __init__.py       
 │   └── test_metrics.py  
-├── experiments/                       # run configs, scripts, results tracking
-├── docs/                              # proposal, literature review, progress reports
+├── experiments/                      # run configs, scripts, results tracking
+├── docs/                             # proposal, literature review, progress reports
 ├── requirements.txt
 └── README.md
 ```
