@@ -32,26 +32,30 @@ related-work framing this project builds on.
 
 ```
 ├── data/
-│   ├── raw/             # SWaT/WADI/HAI raw data (NOT committed — see Data access below)
-│   │   ├── swat/
+│   ├── raw/                          # SWaT/WADI/HAI raw data (NOT committed — see Data access below)
+│   │   ├── swat/                     # SWaT_Dataset_Normal_v1.csv, SWaT_Dataset_Attack_v0.csv
 │   │   ├── wadi/
 │   │   └── hai/
-│   └── processed/       # cleaned/windowed data (NOT committed)
-├── notebooks/           # exploratory analysis, per-dataset EDA
+│   └── processed/                    # cleaned/windowed data (NOT committed)
+├── notebooks/                        # exploratory analysis, per-dataset EDA
+│   ├── 01_swat_eda.ipynb             # exploratory analysis of SWaT
+│   └── 02_swat_preprocessing.ipynb   # visual check of the preprocessing output
 ├── src/
 │   ├── __init__.py       
-│   ├── models/          # LSTM, conv-autoencoder model definitions
-│   ├── federated/       # client/server logic, aggregation strategies
-│   ├── data_loaders/    # dataset loading, preprocessing, windowing
-│   └── eval/            # metrics (including PA / PA%K scoring per evaluation-rigor lit)
+│   ├── models/                       # LSTM, conv-autoencoder model definitions
+│   ├── federated/                    # client/server logic, aggregation strategies
+│   ├── data_loaders/                 # dataset loading, preprocessing, windowing
+│   │   ├── preprocessing.py          # load, drop constant sensors, scale, window
+│   │   └── PREPROCESSING.md          # how to run it
+│   └── eval/                         # metrics (including PA / PA%K scoring per evaluation-rigor lit)
 │       ├── __init__.py   
 │       ├── metrics.py   
 │       └── README.md    
-├── tests/               # unit tests, mirrors src/
+├── tests/                             # unit tests, mirrors src/
 │   ├── __init__.py       
 │   └── test_metrics.py  
-├── experiments/         # run configs, scripts, results tracking
-├── docs/                # proposal, literature review, progress reports
+├── experiments/                       # run configs, scripts, results tracking
+├── docs/                              # proposal, literature review, progress reports
 ├── requirements.txt
 └── README.md
 ```
