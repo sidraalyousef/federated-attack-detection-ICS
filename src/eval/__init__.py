@@ -1,7 +1,10 @@
 from .metrics import (
     DEFAULT_KS,
+    DEFAULT_THETA_P,
+    DEFAULT_THETA_R,
     best_f1_threshold,
     drop_nan,
+    etapr_scores,
     evaluate,
     evaluate_groups,
     get_segments,
@@ -17,8 +20,11 @@ from .metrics import (
 
 __all__ = [
     "DEFAULT_KS",
+    "DEFAULT_THETA_P",
+    "DEFAULT_THETA_R",
     "best_f1_threshold",
     "drop_nan",
+    "etapr_scores",
     "evaluate",
     "evaluate_groups",
     "get_segments",

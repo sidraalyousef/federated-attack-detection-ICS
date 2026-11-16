@@ -33,4 +33,29 @@ PA%K follows Kim et al., AAAI-22: a segment is filled in when more than K% of it
 
 eTaPR (enhanced time-series aware precision/recall, Hwang et al. 2022) comes from the `faster-etapr` package, pinned in `requirements.txt`. It counts an attack as detected if at least 10% of it is covered (`theta_r=0.1`), and an alarm as correct if at least 50% of it overlaps an attack (`theta_p=0.5`). These are the authors' defaults. Keep them fixed for all reported results. Call it directly with `etapr_scores(preds, labels)`, or switch it off with `evaluate(..., include_etapr=False)`.
 
+## Federated results (`src/eval/federated.py`)
+
+These helpers only arrange results that `evaluate` already produced; they don't compute new metrics.
+
+```python
+from src.eval import evaluate_groups
+from src.eval.federated import client_table, client_summary, compare_settings, pooled_evaluate
+
+per_client = evaluate_groups(scores, labels, client_ids, thresholds)   # {client: result}
+table   = client_table(per_client)        # one row per client
+summary = client_summary(table)           # mean / std / min across clients
+
+compare_settings({"centralized": res_central, "local-only": res_local, "FedAvg": res_fedavg})
+pooled = pooled_evaluate(scores, labels, client_ids, thresholds)       # all clients as one test set
+```
+
+Rules for federated tables:
+
+1. **Same data for every setting.** Score the centralized model on the same client slices as the federated models, so the rows of a comparison table are comparable.
+2. **Clients without attacks.** Every F1 is 0 and AUROC/AUPRC are NaN on such a client, whatever the model does. The tables set those metrics to NaN so means skip them, and keep `n_false_alarms` and `fpr`. Judge a no-attack client by its false alarms.
+3. **Per-client mean vs pooled.** The per-client mean treats clients equally, while `pooled_evaluate` weighs clients by their number of attack points. Say which one a table shows. With per-client thresholds, `pooled_evaluate` scores each client's margin over its own threshold.
+4. **Windows are built inside each client**, after the split, so no window crosses a client boundary. Split between attacks so each client holds whole attacks. `pooled_evaluate` warns if an attack touches a client boundary.
+
+`evaluate` also returns `n_false_alarms` and `fpr` (false alarms divided by the number of normal timesteps).
+
 Tests: `python -m pytest tests -q`

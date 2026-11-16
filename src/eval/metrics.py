@@ -355,7 +355,12 @@ def evaluate(
         pa_precision,  pa_recall,  pa_f1,
         pak_auc_f1, pak_f1 (dict K -> F1),
         auroc, auprc (threshold-free; NaN if only one class present),
-        threshold, n_points, n_attack_points, n_segments, n_segments_detected
+        threshold, n_points, n_attack_points, n_segments, n_segments_detected,
+        n_false_alarms (normal timesteps flagged), fpr (false-alarm rate on
+        normal timesteps; NaN if there are none)
+
+    Note: on a test set with no attacks every F1 is 0 and AUROC/AUPRC are NaN,
+    whatever the model does. Judge such a set by ``n_false_alarms`` / ``fpr``.
     """
     s, y = drop_nan(scores, labels)
     y = _as_binary(y, "labels")
@@ -368,6 +373,8 @@ def evaluate(
     detected = sum(int(preds[a:b].any()) for a, b in segments)
 
     both_classes = 0 < y.sum() < y.size
+    n_normal = int((y == 0).sum())
+    n_false_alarms = int(((preds == 1) & (y == 0)).sum())
     result = {
         "raw_precision": raw.precision,
         "raw_recall": raw.recall,
@@ -384,6 +391,8 @@ def evaluate(
         "n_attack_points": int(y.sum()),
         "n_segments": len(segments),
         "n_segments_detected": detected,
+        "n_false_alarms": n_false_alarms,
+        "fpr": n_false_alarms / n_normal if n_normal else float("nan"),
     }
     if include_etapr:
         result.update(etapr_scores(preds, y, theta_p, theta_r))

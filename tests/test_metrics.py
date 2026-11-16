@@ -181,3 +181,26 @@ def test_evaluate_groups_passes_kwargs():
     assert "etapr_f1" not in res[0]
     res = evaluate_groups(scores, labels, groups, 0.5)
     assert res[1]["etapr_f1"] == pytest.approx(1.0)
+
+
+# ----------------------- false alarms -------------------------------------- #
+def test_evaluate_false_alarm_counts():
+    scores = np.zeros(len(LABELS))
+    scores[4] = 1.0  # a hit inside the first attack
+    scores[0] = 1.0  # one false alarm
+    res = evaluate(scores, LABELS, threshold=0.5, include_etapr=False)
+    assert res["n_false_alarms"] == 1
+    assert res["fpr"] == pytest.approx(1 / 8)  # 8 normal points in LABELS
+
+
+def test_evaluate_no_attacks_reports_false_alarms_not_f1():
+    labels = np.zeros(10, dtype=int)
+    scores = np.array([0.9, 0.9, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
+    res = evaluate(scores, labels, threshold=0.5, include_etapr=False)
+    assert res["raw_f1"] == 0.0 and np.isnan(res["auroc"])
+    assert res["n_false_alarms"] == 2 and res["fpr"] == pytest.approx(0.2)
+
+
+def test_evaluate_all_attack_labels_has_nan_fpr():
+    res = evaluate(np.ones(4), np.ones(4, dtype=int), threshold=0.5, include_etapr=False)
+    assert res["n_false_alarms"] == 0 and np.isnan(res["fpr"])
