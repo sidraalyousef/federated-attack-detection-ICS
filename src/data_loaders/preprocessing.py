@@ -1,12 +1,20 @@
-"""SWaT 2015 preprocessing: load, drop constant sensors, scale, window.
+"""SWaT 2015 preprocessing: load, clean, split, scale.
 
-Settings: window 60 s, stride 10 s, min-max scaling fitted on normal data only.
-Windows are not labelled here; labels stay per second (see src.eval).
+Steps (see PREPROCESSING.md for the reasons):
 
-    data = prepare_swat("data/raw/swat")
-    data["normal_windows"]   # (49495, 60, 45), train on this
-    data["attack_windows"]   # (44986, 60, 45), test on this
-    data["attack_labels"]    # 0/1 per second
+1. Drop the first 6 hours of the normal file (the plant is still settling).
+2. Drop sensors that never change in either file, plus P201 and P403, which
+   change during normal operation in the attack file and only cause false alarms.
+3. Split the remaining normal data in time: first 85% train, last 15% validation.
+4. Min-max scale every sensor with ranges fitted on the training part only.
+
+The output is 2-D, one row per second. Windows are cut afterwards with
+:func:`make_windows`: train with stride ``TRAIN_STRIDE`` (10), validation and
+attack with stride ``EVAL_STRIDE`` (1) so every second gets a score.
+
+    d = prepare_swat("data/raw/swat")
+    d["train"], d["val"], d["attack"]   # (seconds, 43 sensors), float32, scaled
+    d["attack_labels"]                  # 0/1 per second of the attack file
 """
 from pathlib import Path
 
@@ -16,6 +24,13 @@ import pandas as pd
 NORMAL_FILE = "SWaT_Dataset_Normal_v1.csv"
 ATTACK_FILE = "SWaT_Dataset_Attack_v0.csv"
 TIME_FORMAT = "%d/%m/%Y %I:%M:%S %p"
+
+WARMUP_S = 21_600            # first 6 h of the normal file, dropped
+VAL_FRAC = 0.15              # last 15% of the (post-warm-up) normal file
+EXCLUDE = ("P201", "P403")   # change outside attacks in the attack file
+WINDOW = 60                  # seconds per window
+TRAIN_STRIDE = 10            # stride for training windows
+EVAL_STRIDE = 1              # stride for validation / test windows: never change
 
 
 def load_swat(path):
@@ -35,6 +50,15 @@ def constant_in_all(frames, columns):
     return [c for c in columns if all(f[c].nunique() == 1 for f in frames)]
 
 
+def split_normal(normal, warmup=WARMUP_S, val_frac=VAL_FRAC):
+    """Drop the warm-up rows, then split in time into (train, val)."""
+    if not 0 < val_frac < 1:
+        raise ValueError("val_frac must be in (0, 1)")
+    normal = normal.iloc[warmup:].reset_index(drop=True)
+    n_val = round(len(normal) * val_frac)
+    return normal.iloc[:-n_val].reset_index(drop=True), normal.iloc[-n_val:].reset_index(drop=True)
+
+
 def fit_minmax(x):
     """Per-column min and range; a zero range becomes 1."""
     lo = x.min(axis=0)
@@ -46,35 +70,49 @@ def apply_minmax(x, lo, rng):
     return ((x - lo) / rng).astype(np.float32)
 
 
-def make_windows(x, window=60, stride=10):
-    """(n, window, features) read-only view; n = (len(x) - window) // stride + 1."""
-    # The attack file has an 82 s gap. Its windows are kept so n matches src.eval.
+def make_windows(x, window=WINDOW, stride=TRAIN_STRIDE):
+    """(n, window, features) read-only view; n = (len(x) - window) // stride + 1.
+
+    Use ``stride=EVAL_STRIDE`` (1) for anything you score: with a larger stride,
+    ``src.eval.window_scores_to_points`` leaves most seconds without a score.
+    The view shares memory with ``x``: copy a batch before handing it to torch.
+    """
     view = np.lib.stride_tricks.sliding_window_view(x, window, axis=0)
     return view[::stride].transpose(0, 2, 1)
 
 
-def prepare_swat(raw_dir, window=60, stride=10):
-    """Load both files, drop sensors constant in both, scale on normal, window."""
+def prepare_swat(raw_dir, warmup=WARMUP_S, val_frac=VAL_FRAC, exclude=EXCLUDE):
+    """Load both files, drop warm-up and unusable sensors, split, scale."""
     raw_dir = Path(raw_dir)
     normal = load_swat(raw_dir / NORMAL_FILE)
     attack = load_swat(raw_dir / ATTACK_FILE)
+    train, val = split_normal(normal, warmup, val_frac)
+
     sensors = [c for c in normal.columns if c not in ("Timestamp", "label")]
-    # Sensors constant in normal but moving in the attack file are kept.
-    drop = constant_in_all([normal, attack], sensors)
+    # Constant in the (post-warm-up) normal data and in the attack file.
+    dropped_constant = constant_in_all([pd.concat([train, val]), attack], sensors)
+    excluded = [c for c in exclude if c in sensors and c not in dropped_constant]
+    drop = dropped_constant + excluded
     features = [c for c in sensors if c not in drop]
 
-    lo, rng = fit_minmax(normal[features].to_numpy(np.float64))
-    xn = apply_minmax(normal[features].to_numpy(np.float64), lo, rng)
-    xa = apply_minmax(attack[features].to_numpy(np.float64), lo, rng)
+    lo, rng = fit_minmax(train[features].to_numpy(np.float64))
+
+    def scale(df):
+        return apply_minmax(df[features].to_numpy(np.float64), lo, rng)
+
     return {
         "features": features,
         "dropped": drop,
+        "dropped_constant": dropped_constant,
+        "excluded": excluded,
         "scaler": (lo, rng),
-        "normal_windows": make_windows(xn, window, stride),
-        "attack_windows": make_windows(xa, window, stride),
-        "normal_timestamps": normal["Timestamp"].to_numpy(),
+        "train": scale(train),
+        "val": scale(val),
+        "attack": scale(attack),
+        "train_timestamps": train["Timestamp"].to_numpy(),
+        "val_timestamps": val["Timestamp"].to_numpy(),
         "attack_timestamps": attack["Timestamp"].to_numpy(),
         "attack_labels": attack["label"].to_numpy(),
-        "window": window,
-        "stride": stride,
+        "warmup": warmup,
+        "val_frac": val_frac,
     }

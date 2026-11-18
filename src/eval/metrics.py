@@ -219,7 +219,9 @@ def window_scores_to_points(
                  forecaster/reconstructor "explains" in real time). Timesteps
                  with no window ending on them are NaN - drop them with
                  :func:`drop_nan` before evaluating, on scores *and* labels.
-                 With stride=1 only the first ``window_size - 1`` are NaN.
+                 With stride=1 only the first ``window_size - 1`` are NaN; with a
+                 larger stride most timesteps are NaN, so a warning is raised.
+                 Always score validation and test windows with stride=1.
     mode="max":  each timestep gets the max score of all windows covering it.
     mode="mean": each timestep gets the mean score of all windows covering it.
     """
@@ -229,6 +231,13 @@ def window_scores_to_points(
         raise ValueError(
             f"got {w.size} window scores, expected {expected} for "
             f"n_points={n_points}, window_size={window_size}, stride={stride}"
+        )
+    if mode == "last" and stride > 1:
+        warnings.warn(
+            f"mode='last' with stride={stride} leaves about {1 - 1 / stride:.0%} of the "
+            "timesteps without a score, and evaluate() drops them. Score validation "
+            "and test windows with stride=1.",
+            stacklevel=2,
         )
     out = np.full(n_points, np.nan)
     starts = np.arange(w.size) * stride

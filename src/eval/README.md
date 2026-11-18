@@ -8,8 +8,9 @@ All experiments score models through `evaluate()`, so every table uses the same 
 from src.eval import evaluate, threshold_from_normal, window_scores_to_points, summary_row
 
 # 1. Window scores -> per-timestep scores (score goes to each window's last point)
+# (windows cut with stride=1, so stride is left at its default of 1)
 test_pts = window_scores_to_points(test_window_errors, n_points=len(test_labels), window_size=W)
-val_pts  = window_scores_to_points(val_window_errors,  n_points=len(val_df),      window_size=W)
+val_pts  = window_scores_to_points(val_window_errors,  n_points=len(val),         window_size=W)
 
 # 2. Threshold from NORMAL validation data only (no test labels)
 thr = threshold_from_normal(val_pts, method="percentile", q=99)
@@ -26,7 +27,7 @@ Per-client results (federated): `evaluate_groups(scores, labels, client_ids, thr
 
 1. **Report all three F1s:** `raw_f1` (headline), `pa_f1` (for comparison with papers only), and `pak_auc_f1`. Add `auroc`/`auprc` as threshold-free numbers, and `etapr_f1` (computed by default) on every dataset. It's the HAI authors' own metric, so HAI tables must include it.
 2. **Threshold:** `threshold_from_normal` on a held-out slice of normal training data, with the same rule (default: 99th percentile) for every model. `best_f1_threshold` uses test labels. It is an oracle upper bound and must be labelled as one.
-3. **Window alignment:** `mode="last"` by default. Labels are never windowed: keep the original per-timestep labels, and let `evaluate` drop the NaN warm-up points.
+3. **Window alignment:** `mode="last"` by default. Labels are never windowed: keep the original per-timestep labels, and let `evaluate` drop the NaN warm-up points. **Score validation and test windows with stride 1** (`EVAL_STRIDE` in `src/data_loaders/preprocessing.py`). Training windows can use stride 10, but with `mode="last"` a stride of 10 leaves 90% of the seconds without a score, and `window_scores_to_points` warns about it.
 4. **Sanity check:** every results table includes a `random_scores` row. A model that doesn't clearly beat it on `raw_f1` and `pak_auc_f1` isn't detecting anything.
 
 PA%K follows Kim et al., AAAI-22: a segment is filled in when more than K% of its points are flagged. K=0 is PA and K=100 is raw. The default sweep is K = 0, 10, …, 100, and the reported number is the area under that sweep.

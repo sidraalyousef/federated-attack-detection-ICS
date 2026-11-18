@@ -204,3 +204,14 @@ def test_evaluate_no_attacks_reports_false_alarms_not_f1():
 def test_evaluate_all_attack_labels_has_nan_fpr():
     res = evaluate(np.ones(4), np.ones(4, dtype=int), threshold=0.5, include_etapr=False)
     assert res["n_false_alarms"] == 0 and np.isnan(res["fpr"])
+
+
+def test_window_scores_last_mode_warns_for_stride_above_one():
+    import warnings as _w
+
+    from src.eval import window_scores_to_points
+
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        window_scores_to_points(np.zeros(5), n_points=50, window_size=10, stride=10)
+    assert any("stride=1" in str(c.message) for c in caught)
