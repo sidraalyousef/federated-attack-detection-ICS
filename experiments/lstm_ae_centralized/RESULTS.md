@@ -73,9 +73,36 @@ Random scores with the same rule: raw F1 0.019, AUROC 0.502 (pooled).
 - **Attack #27** (labelled as about 10 hours, mostly in C3) dominates the point-wise labels (see PREPROCESSING.md),
   so C3's raw F1 of about 0.53 mostly reflects that one block.
 
+## Comparison with the centralized Conv-AE
+
+`experiments/conv_ae_centralized.py` was re-run unchanged with its default settings on the same data, the same 5
+clients, threshold rule and metrics (seed 0). Pooled over all clients:
+
+| | LSTM-AE | Conv-AE |
+|---|---|---|
+| Parameters (43 sensors) | 66,107 | 50,811 |
+| Training time, default run (20 epochs, CPU) | 12.9 min | 6.3 min |
+| Final validation loss (43 sensors) | 0.0034 | 0.0039 |
+| Raw F1, 43 sensors | 0.260 | 0.254 |
+| eTaPR F1, 43 sensors | 0.133 | 0.100 |
+| AUROC, 43 sensors | 0.827 | 0.832 |
+| Attacks detected, 43 sensors | 33/35 | 33/35 |
+| Raw F1, 39 sensors (drifting analysers dropped) | 0.292 | 0.262 |
+| AUROC, 39 sensors | 0.909 | 0.901 |
+| Attacks detected, 39 sensors | 30/35 | 31/35 |
+
+- **The two architectures perform about the same.** The gaps (F1 0.006 and AUROC 0.005 on the default sensors) are
+  within what one seed can show. The LSTM-AE is ahead on raw F1 after the drifting sensors are dropped (0.292 vs 0.262),
+  but that needs more seeds before it counts.
+- **Both fail the same way.** Each flags almost every second on C3, C4 and C5 (FPR 0.98 to 1.00 for both models, with and
+  without the drifting sensors). The false alarms therefore come from the shared threshold and sensor drift, not from the
+  model type. Dropping the four analysers helps C2 for both (FPR 0.83 to 0.35 for the LSTM-AE, 0.89 to 0.73 for the Conv-AE).
+- **The Conv-AE trains about twice as fast**, which matters for the local-only and federated runs that train many models.
+  The Conv-AE drop-drifting run took 18 min only because it overlapped with other jobs, so the table uses the default run.
+
 ## Limits
 
 - Single seed (0) and a single configuration; no hyper-parameter search. Differences of a few F1 points between the
-  two sensor sets should not be over-read.
+  two sensor sets or between the two models should not be over-read.
 - The threshold rule (99th percentile of validation) is the one used in the Conv-AE script; it was not tuned.
-- The Conv-AE numbers were not re-run here, so there is no side-by-side table yet.
+- The Conv-AE numbers come from re-running Sid's script with its defaults; her own runs may use other settings.
