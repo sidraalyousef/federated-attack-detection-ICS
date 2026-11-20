@@ -20,12 +20,16 @@ Run from the repo root:
 Outputs go to ``experiments/conv_ae_centralized/outputs/`` (gitignored):
 model weights, training history, per-second scores (so the tables can be
 rebuilt without retraining), per-client tables and the comparison table.
+
+Other experiments can call :func:`run` with their own (e.g. transformed)
+version of the ``prepare_swat`` output.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +45,7 @@ from src.data_loaders.preprocessing import (
     prepare_swat,
 )
 from src.eval import (
+    best_f1_threshold,
     evaluate_groups,
     random_scores,
     summary_row,
@@ -73,78 +78,107 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
-    t0 = time.perf_counter()
+def oracle_raw_f1(scores, labels) -> float:
+    """Raw F1 at the best threshold chosen WITH test labels. An upper bound, not a result."""
+    return best_f1_threshold(scores, labels, protocol="raw")[1]
 
-    # 1. Data
-    print("Loading and preprocessing SWaT ...", flush=True)
-    exclude = tuple(dict.fromkeys(
-        [*EXCLUDE, *(DRIFTING if args.drop_drifting else ()), *args.exclude]))
-    d = prepare_swat(args.raw_dir, exclude=exclude)
-    print(f"{len(d['features'])} sensors kept; excluded: {', '.join(d['excluded'])}")
-    clients = split_clients(d, n_clients=args.n_clients)
-    print(summary(clients), "\n", flush=True)
+
+def run(d: Mapping, out: Path, *, n_clients: int = 5, epochs: int = 20,
+        batch_size: int = 256, lr: float = 1e-3, q: float = 99.0, seed: int = 0,
+        device=None, name: str = "ConvAE centralized", verbose: bool = True) -> dict:
+    """Train, threshold, score and evaluate on ``d`` (a ``prepare_swat``-like dict).
+
+    ``d`` needs ``train``, ``val``, ``attack`` (2-D arrays), ``attack_labels``
+    and the three timestamp arrays. Saves everything to ``out`` and returns
+    ``{"pooled", "pooled_random", "per_client", "comparison", "threshold",
+    "oracle_raw_f1", "history"}``.
+    """
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
+    clients = split_clients(d, n_clients=n_clients)
+    if verbose:
+        print(summary(clients), "\n", flush=True)
 
     train_w = make_windows(d["train"])                      # stride 10
     val_w = make_windows(d["val"], stride=EVAL_STRIDE)      # stride 1
-    print(f"train windows {train_w.shape}, val windows {val_w.shape}", flush=True)
+    n_features = d["train"].shape[1]
+    if verbose:
+        print(f"train windows {train_w.shape}, val windows {val_w.shape}", flush=True)
 
-    # 2. Train
-    model = ConvAE(n_features=d["train"].shape[1], window=WINDOW)
-    print(f"ConvAE: {sum(p.numel() for p in model.parameters()):,} parameters", flush=True)
-    history = train_ae(model, train_w, epochs=args.epochs, batch_size=args.batch_size,
-                       lr=args.lr, val_windows=val_w[::10], device=args.device,
-                       seed=args.seed)
-    torch.save(model.state_dict(), args.out / "conv_ae.pt")
+    # Train
+    torch.manual_seed(seed)
+    model = ConvAE(n_features=n_features, window=WINDOW)
+    if verbose:
+        print(f"ConvAE: {sum(p.numel() for p in model.parameters()):,} parameters", flush=True)
+    history = train_ae(model, train_w, epochs=epochs, batch_size=batch_size, lr=lr,
+                       val_windows=val_w[::10], device=device, seed=seed, verbose=verbose)
+    torch.save(model.state_dict(), out / "conv_ae.pt")
 
-    # 3. Threshold from normal validation data (no test labels)
-    val_pts = window_scores_to_points(score_windows(model, val_w, device=args.device),
+    # Threshold from normal validation data (no test labels)
+    val_pts = window_scores_to_points(score_windows(model, val_w, device=device),
                                       len(d["val"]), WINDOW)
-    thr = threshold_from_normal(val_pts, method="percentile", q=args.q)
-    print(f"\nthreshold (q={args.q}) = {thr:.6g}", flush=True)
+    thr = threshold_from_normal(val_pts, method="percentile", q=q)
 
-    # 4. Score each client's attack windows
-    test_ws = [score_windows(model, client_windows(c)["attack"], device=args.device)
+    # Score each client's attack windows
+    test_ws = [score_windows(model, client_windows(c)["attack"], device=device)
                for c in clients]
     scores, labels, groups = points_from_clients(test_ws, clients)
     res_model = evaluate_groups(scores, labels, groups, thr)
 
-    # 5. Random baseline on the same seconds, same threshold rule
-    rnd = random_scores(len(scores), seed=args.seed)
+    # Random baseline on the same seconds, same threshold rule
+    rnd = random_scores(len(scores), seed=seed)
     rnd[np.isnan(scores)] = np.nan
-    thr_rnd = threshold_from_normal(random_scores(len(val_pts), seed=args.seed + 1), q=args.q)
+    thr_rnd = threshold_from_normal(random_scores(len(val_pts), seed=seed + 1), q=q)
     res_rnd = evaluate_groups(rnd, labels, groups, thr_rnd)
 
-    # Tables
-    name = "ConvAE centralized"
     table = client_table(res_model)
     comparison = compare_settings({name: res_model, "random": res_rnd})
-    pooled = {name: pooled_evaluate(scores, labels, groups, thr),
-              "random": pooled_evaluate(rnd, labels, groups, thr_rnd)}
+    pooled = pooled_evaluate(scores, labels, groups, thr)
+    pooled_rnd = pooled_evaluate(rnd, labels, groups, thr_rnd)
+    oracle = oracle_raw_f1(scores, labels)
 
-    with pd.option_context("display.width", 160, "display.max_columns", 30,
-                           "display.float_format", "{:.3f}".format):
-        print("\nPer client (ConvAE centralized):\n", table)
-        print("\nAcross clients:\n", client_summary(table))
-        print("\nMean over clients with attacks:\n", comparison)
-    print("\nPooled (all clients as one test set):")
-    for n, r in pooled.items():
-        print(summary_row(r, n))
+    if verbose:
+        print(f"\nthreshold (q={q}) = {thr:.6g}")
+        with pd.option_context("display.width", 160, "display.max_columns", 30,
+                               "display.float_format", "{:.3f}".format):
+            print(f"\nPer client ({name}):\n", table)
+            print("\nAcross clients:\n", client_summary(table))
+            print("\nMean over clients with attacks:\n", comparison)
+        print("\nPooled (all clients as one test set):")
+        print(summary_row(pooled, name), f" FPR={pooled['fpr']:.3f}")
+        print(summary_row(pooled_rnd, "random"), f" FPR={pooled_rnd['fpr']:.3f}")
+        print(f"oracle raw F1 (threshold picked on test labels, upper bound): {oracle:.3f}")
 
-    # Save
-    np.savez_compressed(args.out / "scores.npz", val_points=val_pts, test_points=scores,
+    np.savez_compressed(out / "scores.npz", val_points=val_pts, test_points=scores,
                         labels=labels, groups=groups, random_points=rnd)
-    table.to_csv(args.out / "per_client.csv")
-    client_table(res_rnd).to_csv(args.out / "per_client_random.csv")
-    comparison.to_csv(args.out / "comparison.csv")
-    pd.DataFrame(history).to_csv(args.out / "history.csv", index=False)
-    config = {**vars(args), "out": str(args.out), "excluded": d["excluded"],
-              "threshold": thr,
-              "threshold_random": thr_rnd, "minutes": round((time.perf_counter() - t0) / 60, 1)}
-    (args.out / "config.json").write_text(json.dumps(config, indent=2))
-    print(f"\nSaved to {args.out}  ({config['minutes']} min)")
+    table.to_csv(out / "per_client.csv")
+    client_table(res_rnd).to_csv(out / "per_client_random.csv")
+    comparison.to_csv(out / "comparison.csv")
+    pd.DataFrame(history).to_csv(out / "history.csv", index=False)
+    config = {"name": name, "n_clients": n_clients, "epochs": epochs,
+              "batch_size": batch_size, "lr": lr, "q": q, "seed": seed,
+              "features": list(d.get("features", [])), "threshold": thr,
+              "threshold_random": thr_rnd, "oracle_raw_f1": oracle,
+              "minutes": round((time.perf_counter() - t0) / 60, 1)}
+    (out / "config.json").write_text(json.dumps(config, indent=2))
+    if verbose:
+        print(f"\nSaved to {out}  ({config['minutes']} min)")
+    return {"pooled": pooled, "pooled_random": pooled_rnd, "per_client": table,
+            "comparison": comparison, "threshold": thr, "oracle_raw_f1": oracle,
+            "history": history}
+
+
+def main():
+    args = parse_args()
+    exclude = tuple(dict.fromkeys(
+        [*EXCLUDE, *(DRIFTING if args.drop_drifting else ()), *args.exclude]))
+    print("Loading and preprocessing SWaT ...", flush=True)
+    d = prepare_swat(args.raw_dir, exclude=exclude)
+    print(f"{len(d['features'])} sensors kept; excluded: {', '.join(d['excluded'])}")
+    run(d, args.out, n_clients=args.n_clients, epochs=args.epochs,
+        batch_size=args.batch_size, lr=args.lr, q=args.q, seed=args.seed,
+        device=args.device)
 
 
 if __name__ == "__main__":
