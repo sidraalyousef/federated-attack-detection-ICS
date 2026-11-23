@@ -34,6 +34,12 @@ data/raw/swat/
 └── SWaT_Dataset_Attack_v0.csv
 ```
 
+If iTrust gave you the files as Excel workbooks (`SWaT_Dataset_Normal_v1.xlsx`, `SWaT_Dataset_Attack_v0.xlsx`), convert them first. This writes the two CSVs above into `data/raw/swat/` (gitignored) and takes a few minutes per file:
+
+```bash
+python -m src.data_loaders.xlsx_to_csv "<folder with the .xlsx files>"
+```
+
 Activate your virtual environment (see the main README) and run everything from the **repo root**, not from inside `src/`.
 
 ## How to run it
