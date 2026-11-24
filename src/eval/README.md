@@ -60,3 +60,32 @@ Rules for federated tables:
 `evaluate` also returns `n_false_alarms` and `fpr` (false alarms divided by the number of normal timesteps).
 
 Tests: `python -m pytest tests -q`
+
+## By-stage (vertical) results (`src/eval/vertical.py`)
+
+In the by-stage split (`split_clients_by_stage`) every client covers the **same seconds** with only its own sensors, so the helpers above don't fit: pooling stage clients would count each attack second once per client. Combine the stages per second instead:
+
+```python
+from src.eval import evaluate, threshold_from_normal
+from src.eval.federated import client_table
+from src.eval.vertical import (points_from_stages, evaluate_stages,
+                               evaluate_own_attacks, evaluate_any_alarm)
+
+test = points_from_stages(test_window_scores, clients)               # {"S1": per-second, ...}
+val  = points_from_stages(val_window_scores, clients, part="val")
+thr  = {k: threshold_from_normal(v) for k, v in val.items()}         # one threshold per stage
+labels = clients[0]["attack_labels"]
+
+per_stage = evaluate_stages(test, labels, thr)                        # 1. each stage vs all attacks
+own       = evaluate_own_attacks(test, labels, thr, attack_stages)    # 2. each stage vs its own attacks
+plant     = evaluate_any_alarm(test, labels, thr)                     # 3. alarm if ANY stage alarms
+
+central = evaluate(central_points, labels, central_thr)              # centralized: full attack file
+client_table({"centralized": central, "local any-alarm": plant})     # one row per setting
+```
+
+Rules:
+
+1. **The plant-wide number is `evaluate_any_alarm`.** Put it next to the centralized and federated models. Per-stage results (`evaluate_stages`) are expected to have low recall, since a stage can't see attacks elsewhere. Don't average them into a plant score.
+2. **`attack_stages`** lists the targeted stage(s) for each attack segment in the labels, in the order of `get_segments(labels)`, e.g. `[(1,), (1,), (3,), (1, 3), ...]`. Build it once from the official attack list. There is one entry per *labelled* segment, which isn't always one per listed attack. Use `()` when the target is unknown. Attacks on other stages are left out of a stage's score, so they count neither as misses nor as false alarms.
+3. **Any-alarm uses `mode="ratio"` by default:** each stage's score is divided by its own threshold, so stages with large error scales don't dominate AUROC/AUPRC. The alarms are the same in either mode. `stage_alarms` and `stage_false_alarms` show which stage causes the false alarms.
