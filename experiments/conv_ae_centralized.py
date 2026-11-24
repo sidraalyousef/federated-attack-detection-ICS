@@ -15,7 +15,6 @@ Run from the repo root:
 
     python -m experiments.conv_ae_centralized                 # defaults
     python -m experiments.conv_ae_centralized --epochs 2      # quick check
-    python -m experiments.conv_ae_centralized --drop-drifting --out <dir>
 
 Outputs go to ``experiments/conv_ae_centralized/outputs/`` (gitignored):
 model weights, training history, per-second scores (so the tables can be
@@ -37,13 +36,7 @@ import pandas as pd
 import torch
 
 from src.data_loaders.clients import client_windows, points_from_clients, split_clients, summary
-from src.data_loaders.preprocessing import (
-    EVAL_STRIDE,
-    EXCLUDE,
-    WINDOW,
-    make_windows,
-    prepare_swat,
-)
+from src.data_loaders.preprocessing import EVAL_STRIDE, WINDOW, make_windows, prepare_swat
 from src.eval import (
     best_f1_threshold,
     evaluate_groups,
@@ -56,8 +49,6 @@ from src.eval.federated import client_summary, client_table, compare_settings, p
 from src.models import ConvAE, score_windows, train_ae
 
 OUT_DIR = Path("experiments/conv_ae_centralized/outputs")
-# Analyser sensors that drift in the attack file (see PREPROCESSING.md).
-DRIFTING = ("AIT201", "AIT203", "AIT402", "AIT502")
 
 
 def parse_args():
@@ -70,10 +61,6 @@ def parse_args():
     p.add_argument("--q", type=float, default=99.0, help="threshold percentile on validation")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default=None, help="cpu / cuda (default: cuda if available)")
-    p.add_argument("--drop-drifting", action="store_true",
-                   help=f"also drop the drifting analysers {', '.join(DRIFTING)}")
-    p.add_argument("--exclude", nargs="*", default=[],
-                   help="extra sensors to drop (on top of P201/P403)")
     p.add_argument("--out", type=Path, default=OUT_DIR)
     return p.parse_args()
 
@@ -171,11 +158,9 @@ def run(d: Mapping, out: Path, *, n_clients: int = 5, epochs: int = 20,
 
 def main():
     args = parse_args()
-    exclude = tuple(dict.fromkeys(
-        [*EXCLUDE, *(DRIFTING if args.drop_drifting else ()), *args.exclude]))
     print("Loading and preprocessing SWaT ...", flush=True)
-    d = prepare_swat(args.raw_dir, exclude=exclude)
-    print(f"{len(d['features'])} sensors kept; excluded: {', '.join(d['excluded'])}")
+    d = prepare_swat(args.raw_dir)
+    print(f"{len(d['features'])} sensors")
     run(d, args.out, n_clients=args.n_clients, epochs=args.epochs,
         batch_size=args.batch_size, lr=args.lr, q=args.q, seed=args.seed,
         device=args.device)

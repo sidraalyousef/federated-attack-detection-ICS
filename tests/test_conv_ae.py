@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from src.data_loaders.preprocessing import make_windows
-from src.models import ConvAE, score_windows, train_ae
+from src.models import ConvAE, corrupt, score_windows, train_ae
 
 W, F = 60, 43
 
@@ -71,3 +71,46 @@ def test_training_is_reproducible():
         runs.append(train_ae(m, windows, epochs=2, batch_size=8, device="cpu",
                              seed=1, verbose=False)[-1]["train_loss"])
     assert runs[0] == pytest.approx(runs[1])
+
+
+def test_default_model_unchanged_by_dropout_option():
+    keys = set(ConvAE(F, W).state_dict())
+    assert keys == set(ConvAE(F, W, dropout=0.0).state_dict())
+    with pytest.raises(ValueError):
+        ConvAE(F, W, dropout=1.0)
+
+
+def test_dropout_only_in_training_mode():
+    m = ConvAE(F, W, dropout=0.5)
+    x = torch.rand(4, W, F)
+    m.eval()
+    with torch.no_grad():
+        assert torch.equal(m(x), m(x))
+    m.train()
+    with torch.no_grad():
+        assert not torch.equal(m(x), m(x))
+
+
+def test_corrupt_rates_and_shapes():
+    torch.manual_seed(0)
+    x = torch.ones(200, W, F)
+    assert torch.equal(corrupt(x), x)
+    m = corrupt(x, mask_prob=0.25)
+    assert abs((m == 0).float().mean().item() - 0.25) < 0.02
+    s = corrupt(x, sensor_mask_prob=0.25)
+    zero_sensor = (s == 0).all(dim=1)            # whole 60 s of a sensor masked together
+    assert abs(zero_sensor.float().mean().item() - 0.25) < 0.03
+    assert ((s == 0) | (s == 1)).all()
+    n = corrupt(x, noise_std=0.1)
+    assert abs((n - x).std().item() - 0.1) < 0.01
+    assert torch.equal(x, torch.ones(200, W, F))  # input untouched
+
+
+@pytest.mark.parametrize("kwargs", [{"weight_decay": 1e-3}, {"noise_std": 0.05},
+                                    {"mask_prob": 0.2}, {"sensor_mask_prob": 0.2}])
+def test_regularized_training_runs_and_learns(kwargs):
+    x = _data(1_000)
+    windows = make_windows(x, W, 10)
+    hist = train_ae(ConvAE(F, W, dropout=0.1), windows, epochs=4, batch_size=32,
+                    device="cpu", verbose=False, **kwargs)
+    assert hist[-1]["train_loss"] < hist[0]["train_loss"]
