@@ -44,8 +44,13 @@ class ConvAE(nn.Module):
 
     def __init__(self, n_features: int = 43, window: int = 60,
                  channels: tuple[int, int] = (64, 32), latent: int = 16,
-                 kernel: int = 5):
+                 kernel: int = 5, dropout: float = 0.0):
+        """``dropout`` > 0 adds a Dropout layer after every ReLU (regularization;
+        only active in training mode). With the default 0 the layers and the
+        saved state_dict are exactly as before."""
         super().__init__()
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must be in [0, 1)")
         if window % 4:
             raise ValueError(f"window must be divisible by 4, got {window}")
         if kernel % 2 == 0:
@@ -54,14 +59,18 @@ class ConvAE(nn.Module):
         pad = kernel // 2
         self.n_features = n_features
         self.window = window
+        def act():
+            return [nn.ReLU(), nn.Dropout(dropout)] if dropout > 0 else [nn.ReLU()]
+
+        self.dropout = dropout
         self.encoder = nn.Sequential(
-            nn.Conv1d(n_features, c1, kernel, padding=pad), nn.ReLU(),
-            nn.Conv1d(c1, c2, kernel, stride=2, padding=pad), nn.ReLU(),     # W/2
-            nn.Conv1d(c2, latent, kernel, stride=2, padding=pad), nn.ReLU(),  # W/4
+            nn.Conv1d(n_features, c1, kernel, padding=pad), *act(),
+            nn.Conv1d(c1, c2, kernel, stride=2, padding=pad), *act(),     # W/2
+            nn.Conv1d(c2, latent, kernel, stride=2, padding=pad), *act(),  # W/4
         )
         self.decoder = nn.Sequential(
-            nn.ConvTranspose1d(latent, c2, 4, stride=2, padding=1), nn.ReLU(),  # W/2
-            nn.ConvTranspose1d(c2, c1, 4, stride=2, padding=1), nn.ReLU(),      # W
+            nn.ConvTranspose1d(latent, c2, 4, stride=2, padding=1), *act(),  # W/2
+            nn.ConvTranspose1d(c2, c1, 4, stride=2, padding=1), *act(),      # W
             nn.Conv1d(c1, n_features, kernel, padding=pad),
         )
 
@@ -86,21 +95,54 @@ def _batch(windows: np.ndarray, idx, device) -> torch.Tensor:
     return torch.tensor(windows[idx], dtype=torch.float32, device=device)
 
 
+def corrupt(x: torch.Tensor, noise_std: float = 0.0, mask_prob: float = 0.0,
+            sensor_mask_prob: float = 0.0) -> torch.Tensor:
+    """Corrupted copy of a batch ``(B, window, sensors)`` for denoising training.
+
+    noise_std:        add Gaussian noise with this standard deviation.
+    mask_prob:        set each single value to 0 with this probability.
+    sensor_mask_prob: set a sensor's whole window to 0 with this probability
+                      (so the model learns to rebuild a sensor from the others).
+    Uses torch's global random generator (seeded by ``train_ae``).
+    """
+    out = x
+    if noise_std > 0:
+        out = out + noise_std * torch.randn_like(out)
+    if mask_prob > 0:
+        out = out * (torch.rand_like(out) >= mask_prob)
+    if sensor_mask_prob > 0:
+        keep = torch.rand(x.shape[0], 1, x.shape[2], device=x.device) >= sensor_mask_prob
+        out = out * keep
+    return out
+
+
 def train_ae(model: nn.Module, train_windows: np.ndarray, epochs: int = 20,
              batch_size: int = 256, lr: float = 1e-3,
              val_windows: np.ndarray | None = None, device=None, seed: int = 0,
-             verbose: bool = True) -> list[dict]:
+             verbose: bool = True, weight_decay: float = 0.0, noise_std: float = 0.0,
+             mask_prob: float = 0.0, sensor_mask_prob: float = 0.0) -> list[dict]:
     """Train ``model`` to reconstruct ``train_windows`` (normal data only).
 
     Returns one dict per epoch: ``epoch``, ``train_loss`` and, if
     ``val_windows`` is given, ``val_loss`` (mean window MSE; for monitoring
     only, nothing is selected on it). Shuffling uses ``seed``.
+
+    Regularization (all off by default):
+    ``weight_decay`` > 0 switches the optimizer to AdamW with that decay.
+    ``noise_std`` / ``mask_prob`` / ``sensor_mask_prob`` make it a denoising
+    autoencoder: the input is corrupted with :func:`corrupt`, the loss
+    compares the reconstruction with the *clean* window. The reported
+    ``train_loss`` is then the denoising loss.
     """
     device = _device(device)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     model.to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    if weight_decay > 0:
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    else:
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+    denoise = noise_std > 0 or mask_prob > 0 or sensor_mask_prob > 0
     loss_fn = nn.MSELoss()
     n = len(train_windows)
     history = []
@@ -112,8 +154,9 @@ def train_ae(model: nn.Module, train_windows: np.ndarray, epochs: int = 20,
         for start in range(0, n, batch_size):
             idx = np.sort(order[start:start + batch_size])  # sorted: faster gather
             x = _batch(train_windows, idx, device)
+            x_in = corrupt(x, noise_std, mask_prob, sensor_mask_prob) if denoise else x
             opt.zero_grad()
-            loss = loss_fn(model(x), x)
+            loss = loss_fn(model(x_in), x)
             loss.backward()
             opt.step()
             total += loss.item() * len(idx)
@@ -127,6 +170,25 @@ def train_ae(model: nn.Module, train_windows: np.ndarray, epochs: int = 20,
             print(f"epoch {epoch:3d}  train {row['train_loss']:.6f}{val}  ({row['seconds']} s)",
                   flush=True)
     return history
+
+
+@torch.no_grad()
+def sensor_errors(model: nn.Module, windows: np.ndarray, batch_size: int = 2048,
+                  device=None) -> np.ndarray:
+    """Squared reconstruction error of each sensor, averaged over the window.
+
+    Shape ``(len(windows), n_features)``. Its mean over sensors equals
+    :func:`score_windows`. Use it for per-sensor scoring
+    (``src.eval.adaptive``) or to see which sensors drive an alarm.
+    """
+    device = _device(device)
+    model.to(device).eval()
+    out = np.empty((len(windows), windows.shape[2]), dtype=np.float32)
+    for start in range(0, len(windows), batch_size):
+        sl = slice(start, start + batch_size)
+        x = _batch(windows, sl, device)
+        out[sl] = ((model(x) - x) ** 2).mean(dim=1).cpu().numpy()
+    return out
 
 
 @torch.no_grad()
