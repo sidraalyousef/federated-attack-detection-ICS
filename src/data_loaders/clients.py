@@ -17,6 +17,9 @@ Two settings are defined (``CLIENT_STARTS``):
 * 3 clients (check): C1+C2, C3+C4 and C5 of the 5-client split. Every client
   has attacks; the no-attack rule applies to the 5-client setting only.
 
+``split_clients_by_stage`` is a different kind of split: by process stage
+(columns), not by time. See its docstring.
+
 Typical use::
 
     d = prepare_swat("data/raw/swat")
@@ -29,6 +32,7 @@ Typical use::
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
 
@@ -50,6 +54,10 @@ CLIENT_STARTS: dict[int, tuple[str, ...]] = {
     5: (_C2, _C3, _C4, _C5),
     3: (_C3, _C5),  # C1+C2 | C3+C4 | C5
 }
+
+# Process stages (P1-P6) that make up each client in the by-stage split. Stage 6
+# is merged into stage 5: only FIT601 and P602 are left of it after preprocessing.
+STAGE_GROUPS: tuple[tuple[int, ...], ...] = ((1,), (2,), (3,), (4,), (5, 6))
 
 
 def attack_bounds(attack_timestamps, n_clients: int) -> list[tuple[int, int]]:
@@ -104,6 +112,72 @@ def split_clients(d: Mapping, n_clients: int = 5, min_quiet: int = MIN_QUIET_S) 
             "val_timestamps": d["val_timestamps"][va[0]:va[-1] + 1],
             "attack_timestamps": d["attack_timestamps"][s:e],
             "attack_rows": (s, e),
+        })
+    return clients
+
+
+def sensor_stage(name: str) -> int:
+    """SWaT stage (1-6) of a sensor: the first digit of its number, FIT101 -> 1, P602 -> 6."""
+    m = re.search(r"(\d)\d\d$", str(name).strip())
+    if m is None or not 1 <= int(m.group(1)) <= 6:
+        raise ValueError(f"cannot read a SWaT stage from sensor name {name!r}")
+    return int(m.group(1))
+
+
+def split_clients_by_stage(d: Mapping, groups: Sequence[Sequence[int]] = STAGE_GROUPS) -> list[dict]:
+    """Split the output of ``prepare_swat`` into clients by process stage.
+
+    A client is a plant stage: it only sees that stage's sensors and actuators
+    (columns of the scaled arrays), over the whole recording. With the default
+    ``groups`` there are 5 clients, S1, S2, S3, S4 and S5+6 (stage 6 has only
+    two sensors left, so it is merged into stage 5). Pass
+    ``groups=((1,), (2,), (3,), (4,), (5,), (6,))`` for one client per stage.
+
+    The returned dicts have the same keys as :func:`split_clients`, so
+    :func:`client_windows` and :func:`summary` work unchanged, plus
+    ``features`` (sensor names) and ``stages``. Differences to the time split:
+
+    * Clients have different numbers of sensors, so each needs its own input
+      and output layer (the number of features is ``train.shape[1]``).
+    * Every client covers the same seconds: all clients share the same test
+      timeline, labels and ``attack_rows``, and the whole attack file is each
+      client's test data. Train and val are the full centralized sets with
+      only the columns of the stage, so stacking the clients' columns gives back
+      the centralized data.
+    * Evaluate each client on its own (``evaluate_groups`` with the client
+      names). Do not pool them with ``points_from_clients``: the same attack
+      seconds would be counted once per client. A plant-wide alarm needs the
+      clients' scores combined per second first.
+    """
+    features = list(d["features"])
+    stage_of = [sensor_stage(f) for f in features]
+    seen: dict[int, int] = {}
+    for k, g in enumerate(groups):
+        for s in g:
+            if s in seen:
+                raise ValueError(f"stage {s} is in more than one group")
+            seen[s] = k
+    unassigned = sorted({s for s in stage_of if s not in seen})
+    if unassigned:
+        raise ValueError(f"stages {unassigned} have sensors but are not in any group")
+
+    clients = []
+    for g in groups:
+        cols = [i for i, s in enumerate(stage_of) if s in g]
+        if not cols:
+            raise ValueError(f"no sensors left for stage group {tuple(g)}")
+        clients.append({
+            "name": "S" + "+".join(str(s) for s in g),
+            "stages": tuple(g),
+            "features": [features[i] for i in cols],
+            "train": d["train"][:, cols],
+            "val": d["val"][:, cols],
+            "attack": d["attack"][:, cols],
+            "attack_labels": d["attack_labels"],
+            "train_timestamps": d["train_timestamps"],
+            "val_timestamps": d["val_timestamps"],
+            "attack_timestamps": d["attack_timestamps"],
+            "attack_rows": (0, len(d["attack"])),
         })
     return clients
 

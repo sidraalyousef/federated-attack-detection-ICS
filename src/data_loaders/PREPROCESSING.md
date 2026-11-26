@@ -132,6 +132,35 @@ scores, labels, groups = points_from_clients(test_scores, clients)
 
 **Centralized model:** train on `make_windows(d["train"])` and threshold on `make_windows(d["val"], stride=1)` as above, but **score it on each client's attack windows** (`client_windows(c)["attack"]`), so its results line up with the federated ones row for row.
 
+## Client split by stage (`split_clients_by_stage`)
+
+The other way to define clients: each client is a **plant stage** and only sees that stage's sensors and actuators, over the whole recording. The stage of a sensor is the first digit of its number (FIT101 and P102 belong to stage 1, AIT402 to stage 4). Stage 6 has only two sensors left after preprocessing (FIT601, P602), so it is merged into stage 5:
+
+| Client | Stages | Sensors |
+|---|---|---|
+| S1 | 1 | 5 |
+| S2 | 2 | 9 |
+| S3 | 3 | 9 |
+| S4 | 4 | 6 |
+| S5+6 | 5 and 6 | 14 |
+
+```python
+from src.data_loaders.preprocessing import prepare_swat
+from src.data_loaders.clients import split_clients_by_stage, client_windows
+
+d = prepare_swat("data/raw/swat")
+clients = split_clients_by_stage(d)     # groups=((1,), (2,), (3,), (4,), (5, 6)) by default
+for c in clients:
+    w = client_windows(c)               # same windows as before; the last axis is the client's sensors
+    n_features = c["train"].shape[1]    # differs per client: each needs its own input / output layer
+```
+
+Differences to the time split:
+
+- **Same seconds for every client.** Each client's test data is the whole attack file, so all clients share the same labels and attacks. Train and val are the centralized sets with only the stage's columns, so stacking the clients' columns gives back the centralized data.
+- **Evaluate each client on its own.** Do not pool the clients with `points_from_clients`: every attack second would be counted once per client. A plant-wide alarm needs the clients' scores combined per second first.
+- Pass `groups=((1,), (2,), (3,), (4,), (5,), (6,))` for one client per stage. The dicts also carry `features` (sensor names) and `stages`.
+
 ## Checking the output
 
 `notebooks/02_swat_preprocessing.ipynb` runs the same function and plots a few sensors over the attack file. It saves nothing, so it's safe to run any time to see what the data looks like.
