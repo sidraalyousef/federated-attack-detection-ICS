@@ -18,7 +18,16 @@ The project spans two semesters:
 ### Approach
 
 - **Models:** LSTM and convolutional autoencoders (chosen over heavier graph-based approaches
-  like GDN/MTAD-GAT for tractability within the project timeline).
+  like GDN/MTAD-GAT for tractability within the project timeline). A tiny linear /
+  one-hidden-layer autoencoder (`src/models/linear_ae.py`, `LinearAE`) is the cheap baseline
+  (a linear AE learns about the same subspace as PCA, but FedAvg can average it) and the
+  placeholder model for the Flower simulation. All three train on normal windows only with
+  `train_ae`, score windows by reconstruction error with `score_windows`, and move their
+  weights to/from Flower as NumPy arrays with `get_parameters` / `set_parameters`.
+  For the by-stage split, where every client has a different number of sensors, `StageAE`
+  (`src/models/stage_ae.py`) keeps per-stage input/output layers on the client and shares only
+  a common core: clients send `get_parameters(model, shared_keys(model))` and plain FedAvg
+  averages it. The local layers (`local_keys(model)`) never leave the client.
 - **Datasets:** SWaT and WADI as the primary training/evaluation sets, with HAI used to test
   generalization across a different testbed.
 - **Federated setup:** clients train locally on partitioned data; a server aggregates model
@@ -42,7 +51,7 @@ related-work framing this project builds on.
 │   └── 02_swat_preprocessing.ipynb   # visual check of the preprocessing output
 ├── src/
 │   ├── __init__.py       
-│   ├── models/                       # LSTM, conv-autoencoder model definitions
+│   ├── models/                       # LSTM, conv- and linear-autoencoder model definitions
 │   ├── federated/                    # client/server logic, aggregation strategies
 │   ├── data_loaders/                 # dataset loading, preprocessing, windowing
 │   │   ├── preprocessing.py          # load, drop constant sensors, scale, window
