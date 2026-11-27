@@ -125,9 +125,9 @@ def test_group_by_stage_merges_small_stages():
 
 
 def test_stage_model_keeps_stages_separate():
-    from src.models import StageConvAE
+    from src.models import PerStageConvAE
     groups = [[0, 2, 4], [1, 3, 5, 6]]
-    m = StageConvAE(groups, window=W).eval()
+    m = PerStageConvAE(groups, window=W).eval()
     x = torch.rand(2, W, 7)
     with torch.no_grad():
         base = m(x)
@@ -138,15 +138,15 @@ def test_stage_model_keeps_stages_separate():
     assert torch.allclose(out[:, :, [0, 2, 4]], base[:, :, [0, 2, 4]])   # first group unaffected
     assert not torch.allclose(out[:, :, [1, 3, 5, 6]], base[:, :, [1, 3, 5, 6]])
     with pytest.raises(ValueError):
-        StageConvAE([[0, 1], [1, 2]])
+        PerStageConvAE([[0, 1], [1, 2]])
 
 
 def test_stage_model_trains_and_scores():
-    from src.models import StageConvAE, sensor_errors
+    from src.models import PerStageConvAE, sensor_errors
     x = _data(800)
     windows = make_windows(x, W, 10)
     groups = [list(range(20)), list(range(20, F))]
-    m = StageConvAE(groups, window=W)
+    m = PerStageConvAE(groups, window=W)
     hist = train_ae(m, windows, epochs=3, batch_size=32, device="cpu", verbose=False)
     assert hist[-1]["train_loss"] < hist[0]["train_loss"]
     assert sensor_errors(m, make_windows(x, W, 1)[:50], device="cpu").shape == (50, F)

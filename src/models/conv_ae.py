@@ -112,7 +112,7 @@ def group_by_stage(features, min_size: int = 3) -> list[list[int]]:
     return groups
 
 
-class StageConvAE(nn.Module):
+class PerStageConvAE(nn.Module):
     """One small ConvAE per group of sensors (e.g. per plant stage).
 
     Same interface as :class:`ConvAE`: ``(B, window, n_features)`` in and out,
@@ -124,6 +124,9 @@ class StageConvAE(nn.Module):
     Each part keeps the full model's compression (input numbers / latent
     numbers, about 10.75 for 43 sensors -> 16 x 15), with at least one latent
     channel, so no part can just copy its input.
+
+    Centralized only: not the same as :class:`src.models.stage_ae.StageAE`,
+    which is a federated model with per-stage input/output layers.
     """
 
     def __init__(self, groups, window: int = 60, channels: tuple[int, int] = (32, 16),

@@ -62,7 +62,7 @@ def parse_args():
 
 def metrics(r: dict) -> dict:
     return {"precision": r["raw_precision"], "recall": r["raw_recall"], "raw_f1": r["raw_f1"],
-            "pak_auc_f1": r["pak_auc_f1"], "etapr_f1": r["etapr_f1"], "auroc": r["auroc"],
+            "pak_auc_f1": r["pak_auc_f1"], "etapr_f1": r["etapr_f1"], "auroc": r["auroc"], "auprc": r["auprc"],
             "fpr": r["fpr"], "attacks": r["n_segments_detected"], "n_attacks": r["n_segments"]}
 
 
@@ -121,7 +121,7 @@ def main():
 
     table = pd.read_csv(results_path)
     table = table.drop_duplicates(["seed", "strength", "split"], keep="last")
-    cols = ["precision", "recall", "raw_f1", "pak_auc_f1", "etapr_f1", "auroc", "fpr", "attacks"]
+    cols = ["precision", "recall", "raw_f1", "pak_auc_f1", "etapr_f1", "auroc", "auprc", "fpr", "attacks"]
     mean = table.groupby(["split", "strength"])[cols].mean()
     std = table.groupby(["split", "strength"])[cols].std()
     chosen = select(table, "raw_f1")

@@ -13,6 +13,19 @@ Methods (all with online fine-tuning, all 43 sensors):
                   can't be diluted by, or leak into, the other stages.
 ``stage_hybrid``  per-stage models + hybrid score.
 
+Baselines (run these with ``--strengths 0.25``: bar strength fixed at the
+``psb`` value, not re-tuned):
+
+``psb_noft``       trained ConvAE, per-sensor 0.25, no fine-tuning.
+``untrained``      ConvAE at its seeded random init (no training), per-sensor
+                   0.25, no fine-tuning. Fair counterpart of ``psb_noft``: is
+                   the trained model doing the work, or the scoring pipeline?
+``untrained_ft``   same, with online fine-tuning. Note: fine-tuning partly
+                   trains it, so it is not a pure "untrained" model.
+``linear32_psb``   LinearAE(latent=32), per-sensor 0.25, fine-tuning.
+``linear240_psb``  LinearAE(latent=240) = the ConvAE bottleneck size (16 x 15),
+                   per-sensor 0.25, fine-tuning. Does the convolution matter?
+
 Protocol (same as ``conv_ae_select_c1``): for each method the bar strength
 is chosen on client C1 only (highest mean raw F1 over seeds, ties -> lower
 false-alarm rate) and results are reported on held-out clients C2-C5, mean
@@ -45,18 +58,25 @@ from src.eval import evaluate
 from src.eval.adaptive import ratio_to_threshold
 from src.eval.federated import pooled_evaluate
 from src.eval.late_alarms import GRACE_S, evaluate_with_grace
-from src.models import ConvAE, StageConvAE, group_by_stage, sensor_errors, train_ae
+from src.models import ConvAE, LinearAE, PerStageConvAE, group_by_stage, sensor_errors, train_ae
 from src.models.online import stream_scores
 
 OUT_DIR = Path("experiments/conv_ae_improve/outputs")
-METHODS = {                      # name -> (model, threshold mode)
-    "psb": ("conv", "per_sensor"),
-    "hybrid": ("conv", "hybrid"),
-    "stage": ("stage", "per_sensor"),
-    "stage_hybrid": ("stage", "hybrid"),
+METHODS = {                      # name -> (model, threshold mode, fine-tune)
+    "psb": ("conv", "per_sensor", True),
+    "hybrid": ("conv", "hybrid", True),
+    "stage": ("stage", "per_sensor", True),
+    "stage_hybrid": ("stage", "hybrid", True),
+    "psb_noft": ("conv", "per_sensor", False),
+    "untrained": ("untrained", "per_sensor", False),
+    "untrained_ft": ("untrained", "per_sensor", True),
+    "linear32_psb": ("linear32", "per_sensor", True),
+    "linear240_psb": ("linear240", "per_sensor", True),
 }
+LINEAR_LATENT = {"linear32": 32, "linear240": 240}
+GAPS = [("psb_noft", "untrained"), ("psb", "untrained_ft")]   # trained vs untrained
 DEV = "C1"
-COLS = ["precision", "recall", "raw_f1", "pak_auc_f1", "etapr_f1", "auroc", "fpr", "attacks"]
+COLS = ["precision", "recall", "raw_f1", "pak_auc_f1", "etapr_f1", "auroc", "auprc", "fpr", "attacks"]
 
 
 def parse_args():
@@ -78,20 +98,28 @@ def parse_args():
 
 def metrics(r: dict) -> dict:
     return {"precision": r["raw_precision"], "recall": r["raw_recall"], "raw_f1": r["raw_f1"],
-            "pak_auc_f1": r["pak_auc_f1"], "etapr_f1": r["etapr_f1"], "auroc": r["auroc"],
+            "pak_auc_f1": r["pak_auc_f1"], "etapr_f1": r["etapr_f1"], "auroc": r["auroc"], "auprc": r["auprc"],
             "fpr": r["fpr"], "attacks": r["n_segments_detected"], "n_attacks": r["n_segments"]}
 
 
 def get_model(kind: str, seed: int, d: dict, train_w, args) -> torch.nn.Module:
     n = d["train"].shape[1]
     torch.manual_seed(seed)
+    if kind == "untrained":
+        print(f"  {kind} seed {seed}: seeded random init, no training", flush=True)
+        return ConvAE(n_features=n, window=WINDOW)
     if kind == "conv":
         model = ConvAE(n_features=n, window=WINDOW)
         path = Path(args.conv_weights.format(seed=seed)) if args.conv_weights else \
             args.out / f"conv_seed{seed}.pt"
-    else:
-        model = StageConvAE(group_by_stage(d["features"]), window=WINDOW)
+    elif kind in LINEAR_LATENT:
+        model = LinearAE(n_features=n, window=WINDOW, latent=LINEAR_LATENT[kind])
+        path = args.out / f"{kind}_seed{seed}.pt"
+    elif kind == "stage":
+        model = PerStageConvAE(group_by_stage(d["features"]), window=WINDOW)
         path = args.out / f"stage_seed{seed}.pt"
+    else:
+        raise ValueError(f"unknown model kind {kind!r}")
     if path.exists():
         model.load_state_dict(torch.load(path, map_location="cpu"))
         print(f"  {kind} seed {seed}: loaded {path}", flush=True)
@@ -120,6 +148,17 @@ def summarise(table: pd.DataFrame, out: Path) -> dict:
     res = pd.DataFrame(rows).set_index("method")
     with pd.option_context("display.width", 250, "display.max_columns", 20):
         print("\nHeld-out C2-C5, bar strength chosen on C1 (mean ± std over seeds):\n", res)
+    gaps = []
+    for trained, untrained in GAPS:
+        if trained in summary and untrained in summary:
+            a, b = summary[trained]["test_mean"], summary[untrained]["test_mean"]
+            gaps.append({"trained - untrained": f"{trained} - {untrained}",
+                         **{c: round(a[c] - b[c], 4) for c in COLS}})
+    if gaps:
+        gaps = pd.DataFrame(gaps).set_index("trained - untrained")
+        with pd.option_context("display.width", 250, "display.max_columns", 20):
+            print("\nTrained-vs-untrained gap on C2-C5 (difference of means):\n", gaps)
+        gaps.to_csv(out / "gap_table.csv")
     res.to_csv(out / "summary_table.csv")
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary
@@ -143,7 +182,7 @@ def main():
     for seed in args.seeds:
         models = {}
         for method in args.methods:
-            kind, mode = METHODS[method]
+            kind, mode, finetune = METHODS[method]
             if kind not in models:
                 m = get_model(kind, seed, d, train_w, args)
                 v = np.full((len(d["val"]), d["train"].shape[1]), np.nan)
@@ -153,7 +192,7 @@ def main():
             for strength in args.strengths:
                 out = stream_scores(copy.deepcopy(model), [c["attack"] for c in clients], val_err,
                                     threshold=mode, bar_strength=strength, train_windows=train_w,
-                                    finetune=True, q=args.q, seed=seed, device=args.device,
+                                    finetune=finetune, q=args.q, seed=seed, device=args.device,
                                     verbose=False)
                 ratios = [ratio_to_threshold(s, t) for s, t in zip(out["scores"], out["thresholds"])]
                 scores, labels, groups = points_from_clients(ratios, clients)
