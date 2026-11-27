@@ -114,3 +114,39 @@ def test_regularized_training_runs_and_learns(kwargs):
     hist = train_ae(ConvAE(F, W, dropout=0.1), windows, epochs=4, batch_size=32,
                     device="cpu", verbose=False, **kwargs)
     assert hist[-1]["train_loss"] < hist[0]["train_loss"]
+
+
+def test_group_by_stage_merges_small_stages():
+    from src.models import group_by_stage
+    names = ["FIT101", "LIT101", "P101", "AIT201", "FIT201", "P201", "FIT601", "P602"]
+    assert group_by_stage(names) == [[0, 1, 2], [3, 4, 5, 6, 7]]
+    with pytest.raises(ValueError):
+        group_by_stage(["FIT", "LIT101"])
+
+
+def test_stage_model_keeps_stages_separate():
+    from src.models import PerStageConvAE
+    groups = [[0, 2, 4], [1, 3, 5, 6]]
+    m = PerStageConvAE(groups, window=W).eval()
+    x = torch.rand(2, W, 7)
+    with torch.no_grad():
+        base = m(x)
+        x2 = x.clone()
+        x2[:, :, 1] += 5.0                      # change a sensor of the second group only
+        out = m(x2)
+    assert out.shape == x.shape
+    assert torch.allclose(out[:, :, [0, 2, 4]], base[:, :, [0, 2, 4]])   # first group unaffected
+    assert not torch.allclose(out[:, :, [1, 3, 5, 6]], base[:, :, [1, 3, 5, 6]])
+    with pytest.raises(ValueError):
+        PerStageConvAE([[0, 1], [1, 2]])
+
+
+def test_stage_model_trains_and_scores():
+    from src.models import PerStageConvAE, sensor_errors
+    x = _data(800)
+    windows = make_windows(x, W, 10)
+    groups = [list(range(20)), list(range(20, F))]
+    m = PerStageConvAE(groups, window=W)
+    hist = train_ae(m, windows, epochs=3, batch_size=32, device="cpu", verbose=False)
+    assert hist[-1]["train_loss"] < hist[0]["train_loss"]
+    assert sensor_errors(m, make_windows(x, W, 1)[:50], device="cpu").shape == (50, F)

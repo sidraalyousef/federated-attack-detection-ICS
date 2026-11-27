@@ -84,6 +84,81 @@ class ConvAE(nn.Module):
         return self.decoder(z).permute(0, 2, 1)  # back to (B, W, F)
 
 
+def group_by_stage(features, min_size: int = 3) -> list[list[int]]:
+    """Column indices grouped by SWaT process stage (the first digit in the
+    sensor name: FIT101 -> stage 1, AIT504 -> stage 5).
+
+    A stage with fewer than ``min_size`` sensors is merged into the previous
+    stage: an autoencoder on 1-2 sensors has no real bottleneck. On SWaT this
+    merges stage 6 (FIT601, P602) into stage 5.
+    """
+    import re
+
+    stages: dict[int, list[int]] = {}
+    for i, name in enumerate(features):
+        m = re.search(r"\d", str(name))
+        if m is None:
+            raise ValueError(f"no stage digit in sensor name {name!r}")
+        stages.setdefault(int(m.group()), []).append(i)
+    groups: list[list[int]] = []
+    for k in sorted(stages):
+        if groups and len(stages[k]) < min_size:
+            groups[-1].extend(stages[k])
+        else:
+            groups.append(list(stages[k]))
+    if len(groups) > 1 and len(groups[0]) < min_size:   # a small first stage joins the next
+        groups[1] = groups[0] + groups[1]
+        groups.pop(0)
+    return groups
+
+
+class PerStageConvAE(nn.Module):
+    """One small ConvAE per group of sensors (e.g. per plant stage).
+
+    Same interface as :class:`ConvAE`: ``(B, window, n_features)`` in and out,
+    so ``train_ae``, ``sensor_errors``, ``score_windows`` and ``stream_scores``
+    work unchanged. Each group only sees its own sensors, so drift or an attack
+    in one stage cannot change the reconstruction of another (Kravchik &
+    Shabtai 2018 found per-stage models far better on SWaT).
+
+    Each part keeps the full model's compression (input numbers / latent
+    numbers, about 10.75 for 43 sensors -> 16 x 15), with at least one latent
+    channel, so no part can just copy its input.
+
+    Centralized only: not the same as :class:`src.models.stage_ae.StageAE`,
+    which is a federated model with per-stage input/output layers.
+    """
+
+    def __init__(self, groups, window: int = 60, channels: tuple[int, int] = (32, 16),
+                 compression: float = 10.75, kernel: int = 5, dropout: float = 0.0):
+        super().__init__()
+        groups = [list(map(int, g)) for g in groups]
+        flat = sorted(i for g in groups for i in g)
+        if flat != list(range(len(flat))):
+            raise ValueError("groups must split the sensors 0..n-1, each exactly once")
+        self.n_features = len(flat)
+        self.window = window
+        self.groups = groups
+        latent_steps = window // 4
+        self.parts = nn.ModuleList(
+            ConvAE(len(g), window, channels,
+                   max(1, round(len(g) * window / (latent_steps * compression))),
+                   kernel, dropout)
+            for g in groups
+        )
+        order = torch.tensor([i for g in groups for i in g])
+        self.register_buffer("order", order, persistent=False)
+        self.register_buffer("inverse", torch.argsort(order), persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3 or x.shape[1:] != (self.window, self.n_features):
+            raise ValueError(
+                f"expected (batch, {self.window}, {self.n_features}), got {tuple(x.shape)}"
+            )
+        outs = [part(x[:, :, g]) for part, g in zip(self.parts, self.groups)]
+        return torch.cat(outs, dim=2)[:, :, self.inverse]
+
+
 def _device(device):
     if device is not None:
         return torch.device(device)

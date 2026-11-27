@@ -15,6 +15,9 @@ Two thresholds (``threshold=``):
 
 * ``"shared"``: one score per window (MSE), alarm when it exceeds
   ``factor x`` the past median score (``rolling_threshold``).
+* ``"hybrid"``: the larger of the per-sensor score and the shared ratio
+  (window MSE / its own past median), each scaled by its validation 99th
+  percentile; alarm above the validation 99th percentile of that maximum.
 * ``"per_sensor"``: each sensor's error divided by its own past median, the
   largest ratio is the score, alarm above the 99th percentile of the same
   score on validation (``per_sensor_dynamic_scores``). Avoids drift in a few
@@ -44,6 +47,7 @@ from src.eval.adaptive import (
     fit_sensor_bars,
     per_sensor_dynamic_scores,
     rolling_threshold,
+    shared_dynamic_scores,
 )
 from src.eval.metrics import threshold_from_normal
 
@@ -70,7 +74,8 @@ def stream_scores(model: nn.Module, series: Sequence[np.ndarray], val_points: np
             median. For ``"per_sensor"``: 2-D ``(seconds, sensors)`` errors; they
             set the fixed threshold on the ratio score and warm-start each
             sensor's rolling median.
-        threshold: ``"shared"`` or ``"per_sensor"`` (see module docstring).
+        threshold: ``"shared"``, ``"per_sensor"`` or ``"hybrid"`` (see module
+            docstring). ``"hybrid"`` takes 2-D ``val_points`` like ``"per_sensor"``.
         finetune_kwargs: extra arguments for ``train_ae`` during fine-tuning,
             e.g. the same ``noise_std`` / ``weight_decay`` the model was trained with.
         bar_strength: per-sensor only. 0 = one shared bar for all sensors;
@@ -87,18 +92,24 @@ def stream_scores(model: nn.Module, series: Sequence[np.ndarray], val_points: np
     """
     if finetune and train_windows is None:
         raise ValueError("finetune=True needs train_windows for replay")
-    if threshold not in ("shared", "per_sensor"):
-        raise ValueError("threshold must be 'shared' or 'per_sensor'")
-    per_sensor = threshold == "per_sensor"
+    if threshold not in ("shared", "per_sensor", "hybrid"):
+        raise ValueError("threshold must be 'shared', 'per_sensor' or 'hybrid'")
+    hybrid = threshold == "hybrid"
+    per_sensor = threshold in ("per_sensor", "hybrid")
     rng = np.random.default_rng(seed)
     history = np.asarray(val_points, dtype=float)
     if per_sensor:
         if history.ndim != 2:
-            raise ValueError("threshold='per_sensor' needs 2-D val_points (seconds, sensors)")
+            raise ValueError(f"threshold={threshold!r} needs 2-D val_points (seconds, sensors)")
         history = history[~np.isnan(history).all(axis=1)]
         bars = (fit_sensor_bars(history, threshold_window, q, strength=bar_strength)
                 if bar_strength > 0 else None)
         val_scores = per_sensor_dynamic_scores(history, None, threshold_window, bars=bars)
+        if hybrid:   # put both scores on the same scale, then threshold their maximum
+            val_shared = shared_dynamic_scores(history, None, threshold_window)
+            ps_scale = threshold_from_normal(val_scores, q=q)
+            sh_scale = threshold_from_normal(val_shared, q=q)
+            val_scores = np.fmax(val_scores / ps_scale, val_shared / sh_scale)
         factor = threshold_from_normal(val_scores, q=q)        # fixed threshold on the ratio score
     else:
         history = history[~np.isnan(history)]
@@ -114,6 +125,9 @@ def stream_scores(model: nn.Module, series: Sequence[np.ndarray], val_points: np
             if per_sensor:                                          # model before this block's update
                 e = sensor_errors(model, w[a:b], device=device)
                 s = per_sensor_dynamic_scores(e, history, threshold_window, bars=bars)
+                if hybrid:
+                    sh = shared_dynamic_scores(e, history, threshold_window)
+                    s = np.fmax(s / ps_scale, sh / sh_scale)
                 t = np.full(len(s), factor)
                 history = np.vstack([history, e])[-threshold_window:]
             else:

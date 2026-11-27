@@ -141,3 +141,29 @@ def test_sensor_bars_tighten_quiet_sensors():
     plain = per_sensor_dynamic_scores(test, e, window=500, min_periods=10)
     barred = per_sensor_dynamic_scores(test, e, window=500, min_periods=10, bars=bars)
     assert barred[-1] > plain[-1] / bars[1] - 1e-9         # the quiet sensor's change is scaled up
+
+
+def test_hybrid_scores_shapes_and_threshold():
+    rng = np.random.default_rng(5)
+    series = [rng.random((700, F)).astype(np.float32)]
+    train_w = make_windows(rng.random((2000, F)).astype(np.float32), W, 10)
+    out = stream_scores(ConvAE(F, W), series, val_points=rng.random((800, F)) + 0.5,
+                        train_windows=train_w, finetune=True, threshold="hybrid",
+                        bar_strength=0.25, threshold_window=400, update_every=300,
+                        min_update=5, finetune_stride=1, device="cpu", verbose=False)
+    assert len(out["scores"][0]) == 700 - W + 1
+    assert np.all(out["thresholds"][0] == out["factor"])
+    assert out["factor"] >= 1.0       # max of two scores each scaled to their own 99th pct
+    with pytest.raises(ValueError):
+        stream_scores(ConvAE(F, W), series, val_points=np.ones(100), threshold="hybrid")
+
+
+def test_shared_score_is_mse_over_past_median():
+    from src.eval.adaptive import shared_dynamic_scores
+    rng = np.random.default_rng(6)
+    hist, e = rng.random((400, 5)) + 0.5, rng.random((300, 5)) + 0.5
+    got = shared_dynamic_scores(e, hist, window=200, min_periods=10)
+    mse = np.r_[hist.mean(1), e.mean(1)]
+    for t in (0, 150, 299):
+        past = mse[400 + t - 200:400 + t]
+        assert got[t] == pytest.approx(mse[400 + t] / np.median(past))
