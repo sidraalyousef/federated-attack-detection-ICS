@@ -22,6 +22,12 @@ divides each sensor's error by *its own* past median and takes the largest
 ratio, so a drifting sensor only raises its own baseline. Threshold that score
 with the usual fixed rule on validation (99th percentile).
 
+**Hybrid score**: the largest of the per-sensor score and the shared score
+(:func:`shared_dynamic_scores`), each first divided by its own 99th
+percentile on validation; the alarm threshold on the combination is again
+set on validation. Catches attacks that move one sensor a lot *or* many
+sensors a little.
+
 With a dynamic threshold, evaluate ``score / threshold`` against a threshold
 of 1.0 (:func:`ratio_to_threshold`), so ``evaluate`` / ``evaluate_groups``
 work unchanged.
@@ -137,6 +143,25 @@ def per_sensor_dynamic_scores(errors, history=None, window: int = DAY_S,
     if bars is not None:
         ratio = ratio / bars
     return aggregate(ratio, how, k)
+
+
+def shared_dynamic_scores(errors, history=None, window: int = DAY_S,
+                          min_periods: int = 600) -> np.ndarray:
+    """Window MSE divided by its own median over the past ``window`` seconds.
+
+    ``errors`` / ``history`` are per-sensor ``(seconds, sensors)``; the MSE is
+    their mean over sensors. This is the shared-score half of the hybrid score:
+    it adds small changes in many sensors together, which the per-sensor score
+    (largest single sensor) misses.
+    """
+    e = np.asarray(errors, dtype=float)
+    mse = e.mean(axis=1)
+    h = None if history is None else np.asarray(history, dtype=float).mean(axis=1)
+    med = rolling_median(mse, h, window, min_periods)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = mse / np.maximum(med, 1e-12)
+    out[np.isnan(med)] = np.nan
+    return out
 
 
 def fit_sensor_bars(normal_errors, window: int = DAY_S, q: float = 99.0,
